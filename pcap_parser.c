@@ -12,6 +12,7 @@
 
 #define ETHER_HEADER_LENGTH 14
 #define IP_HEADER_LENGTH 20
+#define IPV6_HEADER_LENGTH 40
 
 int packet_nums = 0;
 int ip_packet_nums = 0;
@@ -19,12 +20,13 @@ int table_size = 0;
 struct ip_pkt_info{
   struct in_addr ip_src;
   struct in_addr ip_dst;
+  int version;
   int count;
 };
 
 struct ip_pkt_info ip_pkt_table[3000];
 
-void AddToTable(const struct in_addr src, const struct in_addr dst) {
+void AddToTable(const struct in_addr src, const struct in_addr dst, int version) {
   int i;
   for(i=0; i<table_size; i++) {
     if ( memcmp(&ip_pkt_table[i].ip_src, &src, sizeof(struct in_addr)) == 0 )
@@ -37,6 +39,7 @@ void AddToTable(const struct in_addr src, const struct in_addr dst) {
   memcpy(&ip_pkt_table[table_size].ip_src, &src, sizeof(struct in_addr));
   memcpy(&ip_pkt_table[table_size].ip_dst, &dst, sizeof(struct in_addr));
   ip_pkt_table[table_size].count = 1;
+  ip_pkt_table[table_size].version = version;
   table_size++;
 }
 
@@ -47,11 +50,20 @@ void PrintTable() {
   for (i=0; i<table_size; i++) {
     char ip_src_address[64];
     char ip_dst_address[64];
-    inet_ntop(AF_INET, (const void*)&ip_pkt_table[i].ip_src, ip_src_address, 64);
-    printf("src: %s,  ", ip_src_address);
-    inet_ntop(AF_INET, (const void*)&ip_pkt_table[i].ip_dst, ip_dst_address, 64);
-    printf("dest: %s,  ", ip_dst_address);
-    printf("total nums: %d\n", ip_pkt_table[i].count);
+    if (ip_pkt_table[i].version == 4) {
+      inet_ntop(AF_INET, (const void*)&ip_pkt_table[i].ip_src, ip_src_address, 64);
+      printf("IPv4 src: %s,  ", ip_src_address);
+      inet_ntop(AF_INET, (const void*)&ip_pkt_table[i].ip_dst, ip_dst_address, 64);
+      printf("dest: %s,  ", ip_dst_address);
+      printf("total nums: %d\n", ip_pkt_table[i].count);
+
+    } else if (ip_pkt_table[i].version == 6) {
+      inet_ntop(AF_INET6, (const void*)&ip_pkt_table[i].ip_src, ip_src_address, 64);
+      printf("IPv6 src: %s,  ", ip_src_address);
+      inet_ntop(AF_INET6, (const void*)&ip_pkt_table[i].ip_dst, ip_dst_address, 64);
+      printf("dest: %s,  ", ip_dst_address);
+      printf("total nums: %d\n", ip_pkt_table[i].count);
+    }
   }
 }
 
@@ -73,11 +85,17 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header,
   printf("dest: %s\n", ether_ntoa((struct ether_addr*)eth_header->ether_dhost));
 
   // Check is it a ip packet.
-  if ( ntohs(eth_header->ether_type) != ETHERTYPE_IP ) {
+  if ( ntohs(eth_header->ether_type) == ETHERTYPE_IP || ntohs(eth_header->ether_type) == ETHERTYPE_IPV6 ) {
+  } else {
     printf("\n\n");
     return;
   }
-
+  int ip_version = 4;
+  int actual_ip_header_length = 20;
+  if ( ntohs(eth_header->ether_type) == ETHERTYPE_IPV6 )  {
+    actual_ip_header_length = IPV6_HEADER_LENGTH;
+    ip_version = 6;
+  }
   ip_packet_nums++;
   printf("IP  ");
   const struct ip* ip_header = (struct ip*)(packet + ETHER_HEADER_LENGTH);
@@ -86,14 +104,19 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header,
   if (inet_ntop(AF_INET, (const void*)&ip_header->ip_src, ip_src_address, 64)==NULL)
     printf("Wrong IP addess format.\n");
   printf("src address: %s,  ", ip_src_address);
-  inet_ntop(AF_INET, (const void*)&ip_header->ip_dst, ip_dst_address, 64);
+  switch(ip_version) {
+    case 4 : inet_ntop(AF_INET, (const void*)&ip_header->ip_dst, ip_dst_address, 64);
+    break;
+    case 6 : inet_ntop(AF_INET6, (const void*)&ip_header->ip_dst, ip_dst_address, 64);
+    break;
+  }
   printf("dest: %s\n", ip_dst_address);
-  AddToTable(ip_header->ip_src, ip_header->ip_dst);
+  AddToTable(ip_header->ip_src, ip_header->ip_dst, ip_version);
   
   // Check is it a tcp or udp
 
   if (ip_header->ip_p==IPPROTO_TCP) {  // it is tcp
-    struct tcphdr* tcp_header = (struct tcphdr*)(packet + ETHER_HEADER_LENGTH + IP_HEADER_LENGTH);  
+    struct tcphdr* tcp_header = (struct tcphdr*)(packet + ETHER_HEADER_LENGTH + actual_ip_header_length);  
     unsigned int src_port, dst_port;
     src_port = (unsigned int)ntohs(tcp_header->th_sport);
     dst_port = (unsigned int)ntohs(tcp_header->th_dport);
@@ -102,7 +125,7 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *header,
 
 
   } else if (ip_header->ip_p==IPPROTO_UDP) {  // It is udp
-    struct udphdr* udp_header = (struct udphdr*)(packet + ETHER_HEADER_LENGTH + IP_HEADER_LENGTH);  
+    struct udphdr* udp_header = (struct udphdr*)(packet + ETHER_HEADER_LENGTH + actual_ip_header_length);  
     unsigned int src_port, dst_port;
     src_port = (unsigned int)ntohs(udp_header->uh_sport);
     dst_port = (unsigned int)ntohs(udp_header->uh_dport);
